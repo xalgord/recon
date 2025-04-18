@@ -57,18 +57,16 @@ for DOMAIN in "$@"; do
     fi
 
     # Create subdirectories
-    SCREENSHOTS_DIR="$DOMAIN_DIR/screenshots"
     URLS_DIR="$DOMAIN_DIR/urls"
     TESTING_DIR="$DOMAIN_DIR/testing"
     REPORTS_DIR="$DOMAIN_DIR/reports"
-    mkdir -p "$SCREENSHOTS_DIR" "$URLS_DIR" "$TESTING_DIR" "$REPORTS_DIR" || \
+    mkdir -p "$URLS_DIR" "$TESTING_DIR" "$REPORTS_DIR" || \
         error "Failed to create subdirectories for $DOMAIN"
     info "Created subdirectories for $DOMAIN"
 
     # Display path information
     echo "Domain: $DOMAIN"
     echo "├── Main directory: $DOMAIN_DIR"
-    echo "├── Screenshots: $SCREENSHOTS_DIR"
     echo "├── URLs: $URLS_DIR"
     echo "├── Testing: $TESTING_DIR"
     echo "└── Reports: $REPORTS_DIR"
@@ -79,7 +77,6 @@ for DOMAIN in "$@"; do
     FINDOMAIN_OUTPUT="$URLS_DIR/findomain.txt"
     ASSETFINDER_OUTPUT="$URLS_DIR/assetfinder.txt"
     ALL_DOMAINS_OUTPUT="$URLS_DIR/all-domains.txt"
-    GOWITNESS_DB="$SCREENSHOTS_DIR/gowitness.db"
     NUCLEI_OUTPUT="$REPORTS_DIR/nuclei"
 
     # Create nuclei output directory
@@ -89,7 +86,6 @@ for DOMAIN in "$@"; do
     echo "├── Findomain output: $FINDOMAIN_OUTPUT"
     echo "├── Assetfinder output: $ASSETFINDER_OUTPUT"
     echo "├── Combined domains: $ALL_DOMAINS_OUTPUT"
-    echo "├── Gowitness DB: $GOWITNESS_DB"
     echo "└── Nuclei output: $NUCLEI_OUTPUT"
     echo
 
@@ -125,7 +121,7 @@ for DOMAIN in "$@"; do
     info "Starting live subdomain verification phase..."
 
     LIVE_SUBS="$URLS_DIR/live-subs.txt"
-    LIVE_TXT="$URLS_DIR/live.txt"
+    LIVE_TXT="$URLS_DIR/live-dev-subs.txt"
 
     # Verify live subdomains using httpx
     info "Running httpx to identify live subdomains..."
@@ -134,7 +130,7 @@ for DOMAIN in "$@"; do
 
     # Verify live subdomains with additional ports
     info "Running httpx to identify live subdomains + ports..."
-    httpx -l "$ALL_DOMAINS_OUTPUT" -p 80,443,8080,8000,8443,8888,81,82,8081,8090,3000,5000,7000 -o "$LIVE_TXT" || \
+    httpx -l "$ALL_DOMAINS_OUTPUT" -p 8080,8000,8443,8888,81,82,8081,8090,3000,5000,7000 -o "$LIVE_TXT" || \
         warning "httpx failed to verify live subdomains with ports"
 
     LIVE_COUNT=$(wc -l < "$LIVE_SUBS")
@@ -143,27 +139,7 @@ for DOMAIN in "$@"; do
     info "Found $LIVE_COUNT live subdomains out of $(wc -l < "$ALL_DOMAINS_OUTPUT") total"
 
     # =============================================
-    # Phase 3: Web Enumeration
-    # =============================================
-    info "Starting web enumeration phase..."
-
-    if [ "$LIVE_COUNT" -gt 0 ]; then
-        info "Capturing screenshots of live domains using gowitness..."
-
-        # Run gowitness
-        gowitness scan file -f "$LIVE_SUBS" --timeout 10 \
-            --chrome-window-x 1920 --chrome-window-y 1080 \
-            --screenshot-path "$SCREENSHOTS_DIR" \
-            --write-db --write-db-uri "sqlite://$GOWITNESS_DB" || \
-            warning "Gowitness failed to capture screenshots"
-
-        info "Screenshots captured successfully. Database and screenshots saved to $SCREENSHOTS_DIR"
-    else
-        warning "No live domains found, skipping screenshot capture"
-    fi
-
-    # =============================================
-    # Phase 4: Security Testing
+    # Phase 3: Security Testing
     # =============================================
     info "Starting security testing phase..."
 
@@ -175,7 +151,7 @@ for DOMAIN in "$@"; do
         info "Running nuclei vulnerability scanner on live domains..."
 
         # Run nuclei
-        nuclei -l "$LIVE_SUBS" -sa -dc -headless -t http -o "$NUCLEI_OUTPUT" -silent || \
+        nuclei -l "$LIVE_SUBS" -sa -dc -headless -o "$NUCLEI_OUTPUT" || \
             warning "Nuclei failed to scan live domains"
 
         if [ -s "$NUCLEI_OUTPUT" ]; then
