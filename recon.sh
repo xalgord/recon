@@ -51,6 +51,7 @@ for DOMAIN in "$@"; do
     DOMAIN_DIR="$BASE_DIR/$DOMAIN"
     if [ -d "$DOMAIN_DIR" ]; then
         warning "Directory for $DOMAIN already exists. Using existing directory."
+        rm -rf "$FFUF_OUTPUT"
     else
         mkdir -p "$DOMAIN_DIR" || error "Failed to create directory for $DOMAIN"
         info "Created directory: $DOMAIN_DIR"
@@ -77,16 +78,24 @@ for DOMAIN in "$@"; do
     FINDOMAIN_OUTPUT="$URLS_DIR/findomain.txt"
     ASSETFINDER_OUTPUT="$URLS_DIR/assetfinder.txt"
     ALL_DOMAINS_OUTPUT="$URLS_DIR/all-domains.txt"
-    NUCLEI_OUTPUT="$REPORTS_DIR/nuclei"
+    LIVE_SUBS="$URLS_DIR/live-subs.txt"
+    LIVE_DEV_SUBS="$URLS_DIR/live-dev-subs.txt"
+    ALL_LIVE="$URLS_DIR/all-live.txt"
+    NUCLEI_OUTPUT="$REPORTS_DIR/nuclei-results.txt"
+    FFUF_OUTPUT="$REPORTS_DIR/FFUF.txt"
 
-    # Create nuclei output directory
+    # Create nuclei and FFUF output directories
     mkdir -p "$NUCLEI_OUTPUT"
-    echo "Path variables for $DOMAIN:"
+    info "Path variables for $DOMAIN:"
     echo "├── Subfinder output: $SUBFINDER_OUTPUT"
     echo "├── Findomain output: $FINDOMAIN_OUTPUT"
     echo "├── Assetfinder output: $ASSETFINDER_OUTPUT"
     echo "├── Combined domains: $ALL_DOMAINS_OUTPUT"
-    echo "└── Nuclei output: $NUCLEI_OUTPUT"
+    echo "├── Live subdomains: $LIVE_SUBS"
+    echo "├── Live dev subdomains: $LIVE_DEV_SUBS"
+    echo "├── All live subdomains: $ALL_LIVE"
+    echo "├── Nuclei output: $NUCLEI_OUTPUT"
+    echo "└── FFUF output: $FFUF_OUTPUT"
     echo
 
     # =============================================
@@ -120,9 +129,6 @@ for DOMAIN in "$@"; do
     # =============================================
     info "Starting live subdomain verification phase..."
 
-    LIVE_SUBS="$URLS_DIR/live-subs.txt"
-    LIVE_TXT="$URLS_DIR/live-dev-subs.txt"
-
     # Verify live subdomains using httpx
     info "Running httpx to identify live subdomains..."
     cat "$ALL_DOMAINS_OUTPUT" | httpx -silent -o "$LIVE_SUBS" || \
@@ -130,35 +136,61 @@ for DOMAIN in "$@"; do
 
     # Verify live subdomains with additional ports
     info "Running httpx to identify live subdomains + ports..."
-    httpx -l "$ALL_DOMAINS_OUTPUT" -p 8080,8000,8443,8888,81,82,8081,8090,3000,5000,7000 -o "$LIVE_TXT" || \
+    httpx -l "$ALL_DOMAINS_OUTPUT" -p 8080,8000,8888,81,82,8081,8090,3000,5000,7000 -o "$LIVE_DEV_SUBS" || \
         warning "httpx failed to verify live subdomains with ports"
 
-    LIVE_COUNT=$(wc -l < "$LIVE_SUBS")
+    # Combine live-subs.txt and live-dev-subs.txt into all-live.txt
+    info "Combining live subdomains into all-live.txt..."
+    cat "$LIVE_SUBS" "$LIVE_DEV_SUBS" | sort -u > "$ALL_LIVE"
+    LIVE_COUNT=$(wc -l < "$ALL_LIVE")
     info "Live subdomain verification completed"
-    info "Results saved to $LIVE_SUBS and $LIVE_TXT"
+    info "Results saved to $ALL_LIVE"
     info "Found $LIVE_COUNT live subdomains out of $(wc -l < "$ALL_DOMAINS_OUTPUT") total"
 
     # =============================================
-    # Phase 3: Security Testing
+    # Phase 3: Directory Bruteforcing with FFUF
+    # =============================================
+    info "Starting directory bruteforcing with FFUF..."
+
+    if [ "$LIVE_COUNT" -gt 0 ]; then
+        info "Running FFUF on all live subdomains..."
+
+        # Clear previous FFUF output
+        > "$FFUF_OUTPUT"
+
+        # Run FFUF on each live subdomain
+        for domain in $(cat "$ALL_LIVE"); do
+            info "Running FFUF on $domain..."
+            ffuf -w /usr/share/wordlists/cleaned_custom.txt -u "$domain/FUZZ" -ac -mc 200 -c -r | tee -a "$FFUF_OUTPUT" || \
+                warning "FFUF failed for $domain"
+        done
+
+        info "FFUF scan completed"
+        info "Results saved to $FFUF_OUTPUT"
+    else
+        warning "No live domains found, skipping FFUF scan"
+    fi
+
+    # =============================================
+    # Phase 4: Security Testing
     # =============================================
     info "Starting security testing phase..."
 
     TIMESTAMP=$(date +"%Y%m%d-%H%M%S")
     NUCLEI_OUTPUT="$REPORTS_DIR/nuclei-results-${TIMESTAMP}.txt"
-    NUCLEI_JSON="$REPORTS_DIR/nuclei-results-${TIMESTAMP}.json"
 
     if [ "$LIVE_COUNT" -gt 0 ]; then
-        info "Running nuclei vulnerability scanner on live domains..."
+        info "Running nuclei vulnerability scanner on all live domains..."
 
         # Run nuclei
-        nuclei -l "$LIVE_SUBS" -sa -dc -headless -o "$NUCLEI_OUTPUT" || \
+        nuclei -l "$ALL_LIVE" -headless -es info,low -o "$NUCLEI_OUTPUT" || \
             warning "Nuclei failed to scan live domains"
 
         if [ -s "$NUCLEI_OUTPUT" ]; then
             VULN_COUNT=$(wc -l < "$NUCLEI_OUTPUT")
             info "Nuclei scan completed successfully"
             info "Found $VULN_COUNT potential security issues"
-            info "Results saved to $NUCLEI_OUTPUT and $NUCLEI_JSON"
+            info "Results saved to $NUCLEI_OUTPUT"
 
             # Display top 5 findings as a summary
             echo "=== Security Findings Summary ==="
