@@ -11,17 +11,17 @@ a script for automation
 1. **Input Validation and Setup**:
   - Validates domain argument
   - Creates necessary directories
-  - Checks for required tools (subfinder, findomain, assetfinder, sublist3r, httpx, nuclei, gowitness)
+  - Checks for required tools (subfinder, findomain, assetfinder, httpx, ffuf, nuclei)
 2. **Subdomain Enumeration**:
-  - Runs multiple tools (subfinder, findomain, assetfinder, sublist3r)
-  - Combines and deduplicates results in all_subdomains.txt
+  - Runs multiple tools (subfinder, findomain, assetfinder)
+  - Combines and deduplicates results in all_domains.txt
 3. **Live Subdomain Verification**:
   - Uses httpx to verify live domains
-  - Saves results to both live-subs.txt and live.txt
-4. **Web Enumeration**:
-  - Captures screenshots of live domains using gowitness
-  - Saves screenshots to the screenshots directory
+  - Saves results to both live-subs.txt and live-dev-subs.txt, and append both of the files to all-live.txt
+4. **Directory Bruteforce**:
+  - Runs FFUF tool for directory enumeration using cleaned-custom.txt wordlist.
+  - Saves results in reports/FFUF.txt
 5. **Security Testing**:
   - Runs nuclei vulnerability scanner on live domains
-  - Saves results with timestamp in both text and JSON formats
+  - Saves results reports/nuclei-results.txt
   - Provides a summary of findings
