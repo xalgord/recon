@@ -1,0 +1,1011 @@
+#!/bin/bash
+
+# Comprehensive Subdomain Enumeration Script for Bug Bounty
+# Focuses on passive enumeration, permutation, and DNS validation
+# Author: Claude AI
+# Version: 2.1 - Fixed
+
+# Default wordlist URLs and paths
+DEFAULT_WORDLIST_URL="https://raw.githubusercontent.com/danielmiessler/SecLists/master/Discovery/DNS/subdomains-top1million-20000.txt"
+BACKUP_WORDLIST_URL="https://raw.githubusercontent.com/danielmiessler/SecLists/master/Discovery/DNS/dns-Jhaddix.txt"
+LOCAL_WORDLIST_PATH="/usr/share/wordlists/SecLists/Discovery/DNS/subdomains-top1million-20000.txt"
+
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+PURPLE='\033[0;35m'
+CYAN='\033[0;36m'
+NC='\033[0m' # No Color
+
+# Banner
+print_banner() {
+    echo -e "${PURPLE}"
+    echo "╔═══════════════════════════════════════════════════════════════════════════╗"
+    echo "║                    COMPREHENSIVE SUBDOMAIN ENUMERATION                   ║"
+    echo "║                    Passive → Permutation → Validation                    ║"
+    echo "╚═══════════════════════════════════════════════════════════════════════════╝"
+    echo -e "${NC}"
+}
+
+# Help function
+show_help() {
+    echo -e "${GREEN}Usage: $0 -d domain.com [options]${NC}"
+    echo ""
+    echo "Options:"
+    echo "  -d, --domain         Target domain (required)"
+    echo "  -o, --output         Output directory (default: ./recon-[domain])"
+    echo "  -w, --wordlist       Custom wordlist for brute force"
+    echo "  -r, --resolvers      Custom DNS resolvers file"
+    echo "  -t, --threads        Number of threads (default: 50)"
+    echo "  -s, --silent         Silent mode (minimal output)"
+    echo "  -p, --permute        Enable permutation with alterx"
+    echo "  -b, --bruteforce     Enable DNS brute force"
+    echo "  --skip-passive       Skip passive enumeration"
+    echo "  --skip-permutation   Skip permutation step"
+    echo "  --skip-validation    Skip DNS validation"
+    echo "  -h, --help           Show this help message"
+    echo ""
+    echo "Passive Enumeration Tools:"
+    echo "  - Subfinder (APIs & public sources)"
+    echo "  - Assetfinder (multiple techniques)"
+    echo "  - Chaos (ProjectDiscovery dataset)"
+    echo "  - Sublist3r (search engines)"
+    echo "  - crt.sh (certificate transparency)"
+    echo "  - Findomain (fast passive discovery)"
+    echo ""
+    echo "Active Tools:"
+    echo "  - Alterx (intelligent permutation patterns)"
+    echo "  - DNSx (DNS validation & brute force)"
+    echo "  - httpx (HTTP/HTTPS validation)"
+    echo ""
+    echo "Example Usage:"
+    echo "  $0 -d example.com -p -b                    # Full enumeration"
+    echo "  $0 -d example.com --skip-passive -p        # Only permutation"
+    echo "  $0 -d example.com -w custom.txt -r dns.txt # Custom wordlist & resolvers"
+}
+
+# Logging function
+log() {
+    local level=$1
+    local message=$2
+    local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+    
+    case $level in
+        "INFO")
+            [[ "$silent" != "true" ]] && echo -e "${CYAN}[INFO]${NC} ${timestamp} - $message"
+            ;;
+        "WARN")
+            echo -e "${YELLOW}[WARN]${NC} ${timestamp} - $message"
+            ;;
+        "ERROR")
+            echo -e "${RED}[ERROR]${NC} ${timestamp} - $message"
+            ;;
+        "SUCCESS")
+            [[ "$silent" != "true" ]] && echo -e "${GREEN}[SUCCESS]${NC} ${timestamp} - $message"
+            ;;
+    esac
+    
+    echo "[$level] $timestamp - $message" >> "$output_dir/enumeration.log"
+}
+
+# Check if tool exists
+check_tool() {
+    local tool=$1
+    if ! command -v "$tool" &> /dev/null; then
+        return 1
+    fi
+    return 0
+}
+
+# Create output directories
+create_directories() {
+    local dirs=("passive" "permutation" "bruteforce" "validation" "wordlists" "final")
+    
+    for dir in "${dirs[@]}"; do
+        mkdir -p "$output_dir/$dir"
+    done
+    
+    log "INFO" "Created output directories in $output_dir"
+}
+
+# Download or prepare wordlist for brute force
+prepare_wordlist() {
+    local wordlist_path="$output_dir/wordlists/dns_bruteforce.txt"
+    
+    if [[ -n "$wordlist" && -f "$wordlist" ]]; then
+        log "INFO" "Using custom wordlist: $wordlist"
+        cp "$wordlist" "$wordlist_path"
+        return 0
+    fi
+    
+    # Try local SecLists first
+    if [[ -f "$LOCAL_WORDLIST_PATH" ]]; then
+        log "INFO" "Using local SecLists wordlist: $LOCAL_WORDLIST_PATH"
+        cp "$LOCAL_WORDLIST_PATH" "$wordlist_path"
+        return 0
+    fi
+    
+    # Download from GitHub
+    log "INFO" "Downloading DNS wordlist from SecLists..."
+    if command -v curl &> /dev/null; then
+        if curl -s -L "$DEFAULT_WORDLIST_URL" -o "$wordlist_path" && [[ -s "$wordlist_path" ]]; then
+            log "SUCCESS" "Downloaded primary wordlist successfully"
+            return 0
+        else
+            log "WARN" "Primary wordlist download failed, trying backup..."
+            if curl -s -L "$BACKUP_WORDLIST_URL" -o "$wordlist_path" && [[ -s "$wordlist_path" ]]; then
+                log "SUCCESS" "Downloaded backup wordlist successfully"
+                return 0
+            fi
+        fi
+    elif command -v wget &> /dev/null; then
+        if wget -q "$DEFAULT_WORDLIST_URL" -O "$wordlist_path" && [[ -s "$wordlist_path" ]]; then
+            log "SUCCESS" "Downloaded primary wordlist successfully"
+            return 0
+        else
+            log "WARN" "Primary wordlist download failed, trying backup..."
+            if wget -q "$BACKUP_WORDLIST_URL" -O "$wordlist_path" && [[ -s "$wordlist_path" ]]; then
+                log "SUCCESS" "Downloaded backup wordlist successfully"
+                return 0
+            fi
+        fi
+    fi
+    
+    # Fallback to basic wordlist
+    log "WARN" "Could not download wordlist, creating basic fallback wordlist"
+    cat > "$wordlist_path" << 'EOF'
+www
+mail
+ftp
+admin
+test
+dev
+api
+app
+stage
+staging
+prod
+production
+beta
+alpha
+demo
+blog
+shop
+store
+portal
+secure
+login
+panel
+dashboard
+cpanel
+webmail
+email
+smtp
+pop
+imap
+ns1
+ns2
+dns
+mx
+firewall
+router
+vpn
+remote
+support
+help
+docs
+wiki
+forum
+news
+media
+static
+cdn
+assets
+images
+img
+js
+css
+files
+download
+upload
+backup
+old
+new
+mobile
+m
+wap
+ssl
+tls
+admin
+administrator
+root
+user
+guest
+public
+private
+internal
+external
+intranet
+extranet
+dev1
+dev2
+test1
+test2
+app1
+app2
+web1
+web2
+db
+database
+mysql
+postgres
+redis
+cache
+search
+elasticsearch
+kibana
+grafana
+jenkins
+gitlab
+github
+jira
+confluence
+docker
+k8s
+kubernetes
+monitoring
+metrics
+logs
+alerts
+status
+health
+ping
+echo
+time
+ntp
+ldap
+ad
+proxy
+gateway
+lb
+loadbalancer
+balancer
+cluster
+node1
+node2
+master
+slave
+primary
+secondary
+backup1
+backup2
+archive
+vault
+secret
+config
+settings
+env
+sandbox
+lab
+research
+innovation
+prototype
+pilot
+trial
+experiment
+preview
+canary
+feature
+branch
+version
+release
+build
+ci
+cd
+pipeline
+deploy
+deployment
+service
+microservice
+rest
+soap
+graphql
+websocket
+socket
+realtime
+streaming
+analytics
+stats
+reporting
+admin-panel
+control-panel
+management
+console
+terminal
+ssh
+sftp
+rdp
+vnc
+desktop
+server
+client
+agent
+worker
+processor
+handler
+scheduler
+cron
+batch
+queue
+message
+notification
+alert
+alarm
+event
+trigger
+webhook
+callback
+redirect
+oauth
+sso
+auth
+authentication
+authorization
+token
+jwt
+session
+cookie
+csrf
+captcha
+recaptcha
+security
+waf
+ids
+ips
+siem
+log
+audit
+compliance
+gdpr
+hipaa
+sox
+pci
+iso
+nist
+owasp
+pentest
+scan
+vulnerability
+exploit
+payload
+EOF
+    
+    return 0
+}
+
+# Passive enumeration with Subfinder
+run_subfinder() {
+    log "INFO" "Running Subfinder for passive enumeration..."
+    
+    if check_tool "subfinder"; then
+        subfinder -d "$domain" -all -recursive -t 100 -o "$output_dir/passive/subfinder.txt" -silent 2>/dev/null
+        local count=$(wc -l < "$output_dir/passive/subfinder.txt" 2>/dev/null || echo "0")
+        log "SUCCESS" "Subfinder found $count subdomains"
+    else
+        log "ERROR" "Subfinder not found. Install: go install -v github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest"
+        touch "$output_dir/passive/subfinder.txt"
+    fi
+}
+
+# Passive enumeration with Assetfinder
+run_assetfinder() {
+    log "INFO" "Running Assetfinder for passive enumeration..."
+    
+    if check_tool "assetfinder"; then
+        assetfinder --subs-only "$domain" > "$output_dir/passive/assetfinder.txt" 2>/dev/null
+        local count=$(wc -l < "$output_dir/passive/assetfinder.txt" 2>/dev/null || echo "0")
+        log "SUCCESS" "Assetfinder found $count subdomains"
+    else
+        log "ERROR" "Assetfinder not found. Install: go install github.com/tomnomnom/assetfinder@latest"
+        touch "$output_dir/passive/assetfinder.txt"
+    fi
+}
+
+# Chaos enumeration (ProjectDiscovery dataset)
+run_chaos() {
+    log "INFO" "Running Chaos for ProjectDiscovery dataset enumeration..."
+    
+    if check_tool "chaos"; then
+        chaos -d "$domain" -o "$output_dir/passive/chaos.txt" -silent 2>/dev/null
+        local count=$(wc -l < "$output_dir/passive/chaos.txt" 2>/dev/null || echo "0")
+        log "SUCCESS" "Chaos found $count subdomains"
+    else
+        log "WARN" "Chaos not found. Install: go install -v github.com/projectdiscovery/chaos-client/cmd/chaos@latest"
+        touch "$output_dir/passive/chaos.txt"
+    fi
+}
+
+# Passive enumeration with Sublist3r
+run_sublist3r() {
+    log "INFO" "Running Sublist3r for search engine enumeration..."
+    
+    if check_tool "sublist3r"; then
+        sublist3r -d "$domain" -o "$output_dir/passive/sublist3r.txt" 2>/dev/null
+        local count=$(wc -l < "$output_dir/passive/sublist3r.txt" 2>/dev/null || echo "0")
+        log "SUCCESS" "Sublist3r found $count subdomains"
+    elif command -v python3 &> /dev/null && python3 -c "import sublist3r" 2>/dev/null; then
+        python3 -m sublist3r -d "$domain" -o "$output_dir/passive/sublist3r.txt" 2>/dev/null
+        local count=$(wc -l < "$output_dir/passive/sublist3r.txt" 2>/dev/null || echo "0")
+        log "SUCCESS" "Sublist3r found $count subdomains"
+    else
+        log "WARN" "Sublist3r not found. Install: pip3 install sublist3r"
+        touch "$output_dir/passive/sublist3r.txt"
+    fi
+}
+
+# Certificate transparency logs enumeration
+run_crtsh() {
+    log "INFO" "Querying crt.sh for certificate transparency logs..."
+    
+    if command -v curl &> /dev/null; then
+        if command -v jq &> /dev/null; then
+            curl -s "https://crt.sh/?q=%.$domain&output=json" 2>/dev/null | \
+            jq -r '.[].name_value' 2>/dev/null | \
+            sed 's/\*\.//g' | \
+            grep -E "^[a-zA-Z0-9]" | \
+            grep "\.$domain$" | \
+            sort -u > "$output_dir/passive/crtsh.txt" 2>/dev/null
+        else
+            curl -s "https://crt.sh/?q=%.$domain&output=json" 2>/dev/null | \
+            grep -oE '"name_value":"[^"]*"' | \
+            cut -d'"' -f4 | \
+            sed 's/\*\.//g' | \
+            grep -E "^[a-zA-Z0-9]" | \
+            grep "\.$domain$" | \
+            sort -u > "$output_dir/passive/crtsh.txt" 2>/dev/null
+        fi
+        
+        local count=$(wc -l < "$output_dir/passive/crtsh.txt" 2>/dev/null || echo "0")
+        log "SUCCESS" "crt.sh found $count subdomains"
+    else
+        log "ERROR" "curl not found for crt.sh enumeration"
+        touch "$output_dir/passive/crtsh.txt"
+    fi
+}
+
+# Findomain enumeration
+run_findomain() {
+    log "INFO" "Running Findomain for fast passive enumeration..."
+    
+    if check_tool "findomain"; then
+        findomain --quiet -t "$domain" -u "$output_dir/passive/findomain.txt" 2>/dev/null
+        local count=$(wc -l < "$output_dir/passive/findomain.txt" 2>/dev/null || echo "0")
+        log "SUCCESS" "Findomain found $count subdomains"
+    else
+        log "WARN" "Findomain not found. Install from: https://github.com/Findomain/Findomain"
+        touch "$output_dir/passive/findomain.txt"
+    fi
+}
+
+# Merge passive results
+merge_passive_results() {
+    log "INFO" "Merging passive enumeration results..."
+    
+    # Combine all passive results and filter for valid domain format
+    find "$output_dir/passive" -name "*.txt" -type f -exec cat {} \; 2>/dev/null | \
+    grep -E "^[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?)*\.$domain$" | \
+    sort -u > "$output_dir/passive_subdomains.txt"
+    
+    local total_count=$(wc -l < "$output_dir/passive_subdomains.txt" 2>/dev/null || echo "0")
+    log "SUCCESS" "Total unique passive subdomains: $total_count"
+}
+
+# Enhanced subdomain permutation with Alterx (FIXED - Only called once)
+run_alterx_permutation() {
+    log "INFO" "Running Alterx for comprehensive subdomain permutation..."
+    
+    if check_tool "alterx" && [[ -f "$output_dir/passive_subdomains.txt" ]]; then
+        local passive_count=$(wc -l < "$output_dir/passive_subdomains.txt" 2>/dev/null || echo "0")
+        
+        if [[ $passive_count -gt 0 ]]; then
+            log "INFO" "Processing $passive_count passive subdomains through Alterx..."
+            
+            # Use alterx with comprehensive patterns
+            cat "$output_dir/passive_subdomains.txt" | \
+            alterx -o "$output_dir/permutation/alterx_permutations.txt" 2>/dev/null
+            
+            local count=$(wc -l < "$output_dir/permutation/alterx_permutations.txt" 2>/dev/null || echo "0")
+            log "SUCCESS" "Alterx generated $count total permutations from passive results"
+        else
+            log "WARN" "No passive subdomains found for Alterx permutation"
+            touch "$output_dir/permutation/alterx_permutations.txt"
+        fi
+    else
+        log "ERROR" "Alterx not found or no passive results. Install: go install github.com/projectdiscovery/alterx/cmd/alterx@latest"
+        touch "$output_dir/permutation/alterx_permutations.txt"
+    fi
+}
+
+# DNS brute force with DNSx using configurable wordlist
+run_dnsx_bruteforce() {
+    log "INFO" "Running DNSx for DNS brute force enumeration..."
+    
+    if check_tool "dnsx"; then
+        local wordlist_file="$output_dir/wordlists/dns_bruteforce.txt"
+        
+        if [[ ! -f "$wordlist_file" ]]; then
+            prepare_wordlist
+        fi
+        
+        if [[ -f "$wordlist_file" ]]; then
+            local wordlist_size=$(wc -l < "$wordlist_file" 2>/dev/null || echo "0")
+            log "INFO" "Using wordlist: $wordlist_file ($wordlist_size entries)"
+            
+            local resolver_args=""
+            if [[ -n "$resolvers" && -f "$resolvers" ]]; then
+                resolver_args="-r $resolvers"
+            fi
+            
+            dnsx -d "$domain" -w "$wordlist_file" $resolver_args -t "$threads" -o "$output_dir/bruteforce/dnsx_bruteforce.txt" -silent 2>/dev/null
+            
+            local count=$(wc -l < "$output_dir/bruteforce/dnsx_bruteforce.txt" 2>/dev/null || echo "0")
+            log "SUCCESS" "DNSx brute force found $count subdomains"
+        else
+            log "ERROR" "Could not prepare wordlist for brute force"
+            touch "$output_dir/bruteforce/dnsx_bruteforce.txt"
+        fi
+    else
+        log "ERROR" "DNSx not found. Install: go install -v github.com/projectdiscovery/dnsx/cmd/dnsx@latest"
+        touch "$output_dir/bruteforce/dnsx_bruteforce.txt"
+    fi
+}
+
+# FIXED: Streamlined validation pipeline (removed duplicate alterx call)
+run_validation_pipeline() {
+    log "INFO" "Running validation pipeline: All Subdomains → DNSx → httpx..."
+    
+    # Combine all discovered subdomains (passive + brute force + permutation)
+    find "$output_dir" -name "*.txt" -path "*/passive/*" -o -path "*/bruteforce/*" -o -path "*/permutation/*" | \
+    xargs cat 2>/dev/null | \
+    sort -u > "$output_dir/all_discovered_subdomains.txt"
+    
+    local total_discovered=$(wc -l < "$output_dir/all_discovered_subdomains.txt" 2>/dev/null || echo "0")
+    log "INFO" "Total discovered subdomains for validation: $total_discovered"
+    
+    if [[ $total_discovered -gt 0 ]]; then
+        # Step 1: Validate all subdomains with DNSx
+        if check_tool "dnsx"; then
+            log "INFO" "Step 1: Validating subdomains with DNSx..."
+            
+            local resolver_args=""
+            if [[ -n "$resolvers" && -f "$resolvers" ]]; then
+                resolver_args="-r $resolvers"
+            fi
+            
+            cat "$output_dir/all_discovered_subdomains.txt" | \
+            dnsx $resolver_args -t "$threads" -resp -o "$output_dir/validation/dnsx_validated.txt" -silent 2>/dev/null
+            
+            # Extract validated domain names
+            if [[ -f "$output_dir/validation/dnsx_validated.txt" ]]; then
+                cut -d' ' -f1 "$output_dir/validation/dnsx_validated.txt" > "$output_dir/final/validated_subdomains.txt" 2>/dev/null
+            else
+                touch "$output_dir/final/validated_subdomains.txt"
+            fi
+            
+            local validated_count=$(wc -l < "$output_dir/final/validated_subdomains.txt" 2>/dev/null || echo "0")
+            log "SUCCESS" "DNSx validated $validated_count live subdomains"
+        else
+            log "ERROR" "DNSx not found for validation step"
+            cp "$output_dir/all_discovered_subdomains.txt" "$output_dir/final/validated_subdomains.txt"
+        fi
+        
+        # Step 2: Check HTTP/HTTPS status with httpx
+        if check_tool "httpx" && [[ -f "$output_dir/final/validated_subdomains.txt" ]]; then
+            local validated_count=$(wc -l < "$output_dir/final/validated_subdomains.txt" 2>/dev/null || echo "0")
+            
+            if [[ $validated_count -gt 0 ]]; then
+                log "INFO" "Step 2: Checking HTTP/HTTPS status with httpx..."
+                
+                cat "$output_dir/final/validated_subdomains.txt" "$output_dir/bruteforce/dnsx_bruteforce.txt" "$output_dir/passive_subdomains.txt" | \
+                httpx -threads "$threads" -title -status-code -tech-detect -follow-redirects -dashboard \
+                -o "$output_dir/final/live_subdomains_with_http.txt" 2>/dev/null
+                
+                # Create clean list of HTTP-responsive subdomains
+                cat "$output_dir/final/live_subdomains_with_http.txt" | \
+                cut -d " " -f 1 | tee "$output_dir/final/http_responsive_subdomains.txt" 2>/dev/null
+                
+                local http_count=$(wc -l < "$output_dir/final/http_responsive_subdomains.txt" 2>/dev/null || echo "0")
+                log "SUCCESS" "httpx found $http_count HTTP/HTTPS responsive subdomains"
+            else
+                log "WARN" "No validated subdomains to check with httpx"
+                touch "$output_dir/final/http_responsive_subdomains.txt"
+                touch "$output_dir/final/live_subdomains_with_http.txt"
+            fi
+        else
+            log "WARN" "httpx not found. Install: go install -v github.com/projectdiscovery/httpx/cmd/httpx@latest"
+            touch "$output_dir/final/http_responsive_subdomains.txt"
+            touch "$output_dir/final/live_subdomains_with_http.txt"
+        fi
+        
+        # Clean up temporary file
+        rm -f "$output_dir/all_discovered_subdomains.txt"
+    else
+        log "WARN" "No subdomains discovered for validation pipeline"
+        touch "$output_dir/final/validated_subdomains.txt"
+        touch "$output_dir/final/http_responsive_subdomains.txt"
+        touch "$output_dir/final/live_subdomains_with_http.txt"
+    fi
+}
+
+# Generate comprehensive report
+generate_report() {
+    log "INFO" "Generating comprehensive enumeration report..."
+    
+    local report_file="$output_dir/subdomain_enumeration_report.txt"
+    local stats_file="$output_dir/enumeration_statistics.json"
+    
+    # Count results from each phase
+    local passive_count=$(wc -l < "$output_dir/passive_subdomains.txt" 2>/dev/null || echo "0")
+    local alterx_count=$(wc -l < "$output_dir/permutation/alterx_permutations.txt" 2>/dev/null || echo "0")
+    local bruteforce_count=$(wc -l < "$output_dir/bruteforce/dnsx_bruteforce.txt" 2>/dev/null || echo "0")
+    local validated_count=$(wc -l < "$output_dir/final/validated_subdomains.txt" 2>/dev/null || echo "0")
+    local http_count=$(wc -l < "$output_dir/final/http_responsive_subdomains.txt" 2>/dev/null || echo "0")
+    
+    # Generate detailed report
+    cat > "$report_file" << EOF
+===============================================================================
+                       COMPREHENSIVE SUBDOMAIN ENUMERATION REPORT
+===============================================================================
+Target Domain: $domain
+Scan Date: $(date)
+Output Directory: $output_dir
+Threads Used: $threads
+
+ENUMERATION PHASES:
+==================
+
+1. PASSIVE ENUMERATION RESULTS:
+-------------------------------
+EOF
+
+    # Add passive tool results
+    for file in "$output_dir"/passive/*.txt; do
+        if [[ -f "$file" ]]; then
+            local filename=$(basename "$file" .txt)
+            local count=$(wc -l < "$file" 2>/dev/null || echo "0")
+            printf "%-20s: %s subdomains\n" "$filename" "$count" >> "$report_file"
+        fi
+    done
+    
+    cat >> "$report_file" << EOF
+
+Total Passive Subdomains: $passive_count
+
+2. PERMUTATION RESULTS:
+----------------------
+Alterx Permutations: $alterx_count
+
+3. BRUTE FORCE RESULTS:
+----------------------
+DNSx Brute Force: $bruteforce_count
+
+4. VALIDATION RESULTS:
+---------------------
+DNS Validated Subdomains: $validated_count
+HTTP/HTTPS Responsive: $http_count
+
+DISCOVERY EFFICIENCY:
+====================
+EOF
+
+    # Calculate percentages safely
+    if [[ $validated_count -gt 0 ]]; then
+        local passive_rate=$(awk "BEGIN {printf \"%.1f%%\", ($passive_count/$validated_count)*100}" 2>/dev/null)
+        local permutation_rate=$(awk "BEGIN {printf \"%.1f%%\", (($alterx_count-$passive_count)/$validated_count)*100}" 2>/dev/null)
+        local http_rate=$(awk "BEGIN {printf \"%.1f%%\", ($http_count/$validated_count)*100}" 2>/dev/null)
+        
+        echo "Passive Discovery Rate: $passive_rate" >> "$report_file"
+        echo "Permutation Contribution: $permutation_rate" >> "$report_file"
+        echo "HTTP Response Rate: $http_rate" >> "$report_file"
+    else
+        echo "Passive Discovery Rate: N/A" >> "$report_file"
+        echo "Permutation Contribution: N/A" >> "$report_file"
+        echo "HTTP Response Rate: N/A" >> "$report_file"
+    fi
+
+    cat >> "$report_file" << EOF
+
+KEY FILES GENERATED:
+===================
+- passive_subdomains.txt               : All passive enumeration results
+- permutation/alterx_permutations.txt  : Alterx permutation results
+- bruteforce/dnsx_bruteforce.txt       : Brute force discoveries
+- final/validated_subdomains.txt       : DNS validated subdomains
+- final/http_responsive_subdomains.txt : HTTP/HTTPS responsive subdomains
+- final/live_subdomains_with_http.txt  : Detailed HTTP response info
+- validation/dnsx_validated.txt        : Detailed DNS resolution results
+- enumeration.log                      : Complete execution log
+
+PIPELINE FLOW USED:
+==================
+Passive + Permutation + Brute Force → DNSx (validation) → httpx (HTTP check)
+
+RECOMMENDED NEXT STEPS:
+======================
+1. Content discovery on HTTP-responsive subdomains
+2. Parameter mining and endpoint discovery  
+3. Technology stack analysis and service enumeration
+4. Screenshot capture and visual reconnaissance
+5. Custom wordlist generation based on discovered patterns
+6. Deep port scanning on interesting subdomains
+
+TOOL INSTALLATION COMMANDS:
+===========================
+go install -v github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest
+go install github.com/tomnomnom/assetfinder@latest
+go install -v github.com/projectdiscovery/chaos-client/cmd/chaos@latest
+go install github.com/projectdiscovery/alterx/cmd/alterx@latest
+go install -v github.com/projectdiscovery/dnsx/cmd/dnsx@latest
+go install -v github.com/projectdiscovery/httpx/cmd/httpx@latest
+pip3 install sublist3r
+
+Optional but recommended:
+curl -LO https://github.com/Findomain/Findomain/releases/latest/download/findomain-linux.zip
+unzip findomain-linux.zip
+chmod +x findomain
+sudo mv findomain /usr/local/bin/findomain
+
+===============================================================================
+EOF
+
+    # Generate JSON statistics for automation
+    cat > "$stats_file" << EOF
+{
+  "target_domain": "$domain",
+  "scan_date": "$(date -Iseconds)",
+  "statistics": {
+    "passive_enumeration": $passive_count,
+    "permutation_alterx": $alterx_count,
+    "bruteforce_dnsx": $bruteforce_count,
+    "dns_validated": $validated_count,
+    "http_responsive": $http_count
+  },
+  "files": {
+    "passive_results": "passive_subdomains.txt",
+    "dns_validated_results": "final/validated_subdomains.txt", 
+    "http_responsive_results": "final/http_responsive_subdomains.txt",
+    "detailed_http_info": "final/live_subdomains_with_http.txt",
+    "detailed_dns_validation": "validation/dnsx_validated.txt",
+    "execution_log": "enumeration.log"
+  }
+}
+EOF
+
+    log "SUCCESS" "Reports generated: $report_file & $stats_file"
+    
+    # Display summary
+    if [[ "$silent" != "true" ]]; then
+        echo ""
+        echo -e "${GREEN}╔═══════════════════════════════════════════════════════════════╗${NC}"
+        echo -e "${GREEN}║                        ENUMERATION SUMMARY                    ║${NC}"
+        echo -e "${GREEN}╠═══════════════════════════════════════════════════════════════╣${NC}"
+        echo -e "${GREEN}║${NC} Target Domain: ${YELLOW}$domain${NC}"
+        echo -e "${GREEN}║${NC} Passive Subdomains: ${CYAN}$passive_count${NC}"
+        echo -e "${GREEN}║${NC} Permutation Results: ${CYAN}$alterx_count${NC}"
+        echo -e "${GREEN}║${NC} DNS Validated: ${CYAN}$validated_count${NC}"
+        echo -e "${GREEN}║${NC} HTTP Responsive: ${YELLOW}$http_count${NC}"
+        echo -e "${GREEN}║${NC} Output Directory: ${BLUE}$output_dir${NC}"
+        echo -e "${GREEN}╚═══════════════════════════════════════════════════════════════╝${NC}"
+        echo ""
+        echo -e "${PURPLE}Key Result Files:${NC}"
+        echo -e "  ${CYAN}→${NC} $output_dir/final/http_responsive_subdomains.txt"
+        echo -e "  ${CYAN}→${NC} $output_dir/final/live_subdomains_with_http.txt"
+        echo -e "  ${CYAN}→${NC} $report_file"
+    fi
+}
+
+# Main execution function
+main() {
+    # Default values
+    local domain=""
+    local output_dir=""
+    local wordlist=""
+    local resolvers=""
+    local threads=100
+    local silent=false
+    local enable_permutation=false
+    local enable_bruteforce=false
+    local skip_passive=false
+    local skip_permutation=false
+    local skip_validation=false
+    
+    # Parse command line arguments
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            -d|--domain)
+                domain="$2"
+                shift 2
+                ;;
+            -o|--output)
+                output_dir="$2"
+                shift 2
+                ;;
+            -w|--wordlist)
+                wordlist="$2"
+                shift 2
+                ;;
+            -r|--resolvers)
+                resolvers="$2"
+                shift 2
+                ;;
+            -t|--threads)
+                threads="$2"
+                shift 2
+                ;;
+            -s|--silent)
+                silent=true
+                shift
+                ;;
+            -p|--permute)
+                enable_permutation=true
+                shift
+                ;;
+            -b|--bruteforce)
+                enable_bruteforce=true
+                shift
+                ;;
+            --skip-passive)
+                skip_passive=true
+                shift
+                ;;
+            --skip-permutation)
+                skip_permutation=true
+                shift
+                ;;
+            --skip-validation)
+                skip_validation=true
+                shift
+                ;;
+            -h|--help)
+                show_help
+                exit 0
+                ;;
+            *)
+                log "ERROR" "Unknown option: $1"
+                show_help
+                exit 1
+                ;;
+        esac
+    done
+    
+    # Validate required parameters
+    if [[ -z "$domain" ]]; then
+        log "ERROR" "Domain is required. Use -d option."
+        show_help
+        exit 1
+    fi
+    
+    # Validate domain format
+    if ! [[ "$domain" =~ ^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$ ]]; then
+        log "ERROR" "Invalid domain format: $domain"
+        exit 1
+    fi
+    
+    # Set default output directory if not provided
+    if [[ -z "$output_dir" ]]; then
+        output_dir="./recon-$domain-$(date +%Y%m%d-%H%M%S)"
+    fi
+    
+    # Validate custom wordlist if provided
+    if [[ -n "$wordlist" && ! -f "$wordlist" ]]; then
+        log "ERROR" "Custom wordlist file not found: $wordlist"
+        exit 1
+    fi
+    
+    # Validate custom resolvers if provided
+    if [[ -n "$resolvers" && ! -f "$resolvers" ]]; then
+        log "ERROR" "Custom resolvers file not found: $resolvers"
+        exit 1
+    fi
+    
+    # Validate thread count
+    if ! [[ "$threads" =~ ^[0-9]+$ ]] || [[ "$threads" -lt 1 ]] || [[ "$threads" -gt 1000 ]]; then
+        log "ERROR" "Invalid thread count: $threads (must be 1-1000)"
+        exit 1
+    fi
+    
+    print_banner
+    
+    # Create output directories
+    create_directories
+    
+    log "INFO" "Starting comprehensive subdomain enumeration for: $domain"
+    log "INFO" "Output directory: $output_dir"
+    log "INFO" "Threads: $threads"
+    [[ -n "$wordlist" ]] && log "INFO" "Custom wordlist: $wordlist"
+    [[ -n "$resolvers" ]] && log "INFO" "Custom resolvers: $resolvers"
+    
+    # Phase 1: Passive Enumeration
+    if [[ "$skip_passive" != "true" ]]; then
+        log "INFO" "=== PHASE 1: PASSIVE ENUMERATION ==="
+        run_subfinder
+        run_assetfinder
+        run_chaos
+        run_sublist3r
+        run_crtsh
+        run_findomain
+        merge_passive_results
+    else
+        log "INFO" "Skipping passive enumeration phase"
+        touch "$output_dir/passive_subdomains.txt"
+    fi
+    
+    # Phase 2: Permutation (FIXED - Only runs once)
+    if [[ "$enable_permutation" == "true" && "$skip_permutation" != "true" ]]; then
+        log "INFO" "=== PHASE 2: PERMUTATION ==="
+        run_alterx_permutation
+    elif [[ "$skip_permutation" != "true" ]]; then
+        log "INFO" "Permutation phase skipped (use -p to enable)"
+        touch "$output_dir/permutation/alterx_permutations.txt"
+    else
+        log "INFO" "Skipping permutation phase"
+        touch "$output_dir/permutation/alterx_permutations.txt"
+    fi
+    
+    # Phase 3: Brute Force Enumeration
+    if [[ "$enable_bruteforce" == "true" ]]; then
+        log "INFO" "=== PHASE 3: BRUTE FORCE ENUMERATION ==="
+        run_dnsx_bruteforce
+    else
+        log "INFO" "Brute force phase skipped (use -b to enable)"
+        touch "$output_dir/bruteforce/dnsx_bruteforce.txt"
+    fi
+    
+    # Phase 4: Validation Pipeline (FIXED - No duplicate alterx)
+    if [[ "$skip_validation" != "true" ]]; then
+        log "INFO" "=== PHASE 4: VALIDATION PIPELINE ==="
+        run_validation_pipeline
+    else
+        log "INFO" "Skipping validation phase"
+        # Create fallback results
+        find "$output_dir" -name "*.txt" -path "*/passive/*" -o -path "*/bruteforce/*" -o -path "*/permutation/*" | \
+        xargs cat 2>/dev/null | sort -u > "$output_dir/final/validated_subdomains.txt"
+        touch "$output_dir/final/http_responsive_subdomains.txt"
+        touch "$output_dir/final/live_subdomains_with_http.txt"
+    fi
+    
+    # Phase 5: Report Generation
+    log "INFO" "=== PHASE 5: REPORT GENERATION ==="
+    generate_report
+    
+    log "SUCCESS" "Comprehensive subdomain enumeration completed successfully!"
+    
+    # Final recommendations
+    if [[ "$silent" != "true" ]]; then
+        echo ""
+        echo -e "${PURPLE}Next Steps Recommendations:${NC}"
+        echo -e "  ${CYAN}1.${NC} Content discovery: ${YELLOW}ffuf -w wordlist.txt -u FUZZ/FUZZ -H 'Host: FUZZ.$domain'${NC}"
+        echo -e "  ${CYAN}2.${NC} Screenshot capture: ${YELLOW}cat $output_dir/final/http_responsive_subdomains.txt | aquatone${NC}"
+        echo -e "  ${CYAN}3.${NC} Port scanning: ${YELLOW}nmap -iL $output_dir/final/validated_subdomains.txt -T4 -Pn${NC}"
+        echo -e "  ${CYAN}4.${NC} Technology analysis: ${YELLOW}cat $output_dir/final/live_subdomains_with_http.txt | grep -E 'tech:'${NC}"
+        echo ""
+    fi
+}
+
+# Cleanup function for script interruption
+cleanup() {
+    log "WARN" "Script interrupted. Cleaning up..."
+    # Kill any background processes
+    jobs -p | xargs -r kill 2>/dev/null
+    exit 1
+}
+
+# Set up signal handlers
+trap cleanup SIGINT SIGTERM
+
+# Check if script is being executed directly
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    main "$@"
+fi
